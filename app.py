@@ -104,19 +104,27 @@ if _run_col.button("▶️ Run Analysis", type="primary"):
     st.session_state["do_run"] = True
 if _run_col.button("Reset"):
     st.session_state["do_run"] = False
-    for k in ["up_deg", "up_fgsea", "up_rank", "up_le", "up_es"]:
-        if k in st.session_state:
-            del st.session_state[k]
-
+    # Clean counter: bump reset_id so uploaders get brand-new keys
+    if "reset_id" not in st.session_state:
+        st.session_state["reset_id"] = 0
+    st.session_state["reset_id"] += 1
+    # Clear cached data to avoid stale reads
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+        
 do_run = st.session_state.get("do_run", False)
 
 # Anchors (collapsible)
 with st.sidebar.expander("Anchor Inputs", expanded=False):
-    up_deg = st.file_uploader("1) DEG table", type=["csv", "tsv", "txt"], key="up_deg")
-    up_fgsea = st.file_uploader("2) fgsea_results.csv", type=["csv"], key="up_fgsea")
-    up_rank = st.file_uploader("3) rank.csv", type=["csv"], key="up_rank")
-    up_le = st.file_uploader("4) leading_edge.csv (optional)", type=["csv"], key="up_le")
-    up_es = st.file_uploader("5) es_curve.csv (from R)", type=["csv"], key="up_es")
+    salt = st.session_state.get("reset_id", 0)
+    
+    up_deg = st.file_uploader("1) DEG table", type=["csv", "tsv", "txt"], key=f"up_deg_{salt}")
+    up_fgsea = st.file_uploader("2) fgsea_results.csv", type=["csv"], key=f"up_fgsea_{salt}")
+    up_rank = st.file_uploader("3) rank.csv", type=["csv"], key=f"up_rank_{salt}")
+    up_le = st.file_uploader("4) leading_edge.csv (optional)", type=["csv"], key=f"up_le_{salt}")
+    up_es = st.file_uploader("5) es_curve.csv (from R)", type=["csv"], key=f"up_es_{salt}")
 
 # Thresholds (collapsible)
 with st.sidebar.expander("Thresholds", expanded=False):
@@ -445,30 +453,54 @@ if want_export:
 
     # Enrichment curve
     if do_run and (df_es is not None) and (df_rank is not None):
-        fig = plt.figure()
-        xs = df_es["rank"].values; es = df_es["es"].values
-        es_max, es_min = float(np.max(es)), float(np.min(es)); es_range = es_max - es_min
-        where_mode = st.session_state.get("where_mode", "pre") if isinstance(st.session_state.get("where_mode", "pre"), str) else "pre"
-        plt.step(xs, es, where=where_mode, linewidth=cfg_line["main"], color=cfg_color["line"])
-        plt.axhline(0.0, color="black", linestyle="-", linewidth=1.0)
-        plt.axhline(es_max, color="red", linestyle="--", linewidth=cfg_line["cutoff"]) 
-        plt.axhline(es_min, color="red", linestyle="--", linewidth=cfg_line["cutoff"]) 
-        hits = df_es.loc[df_es["hit"] == 1, "rank"].values
-        if (len(hits) > 0) and (es_range > 0):
-            tick_len = cfg_size["tick"] * es_range
-            nes_val = None; pt = (pathway_title or "").strip()
-            if (df_fgsea is not None) and (len(pt) > 0) and ("pathway" in df_fgsea.columns):
-                row = df_fgsea[df_fgsea["pathway"].str.lower() == pt.lower()]
-                if not row.empty and "nes" in row.columns:
-                    nes_val = float(row.iloc[0]["nes"])
-            if nes_val is None:
-                nes_val = es_max if abs(es_max) >= abs(es_min) else es_min
-            y0, y1 = (0.0, -tick_len) if nes_val >= 0 else (0.0, tick_len)
-            for r in hits:
-                plt.vlines(r, y0, y1, linewidth=0.5, color=cfg_color["tick"])        
-        plt.xlabel("rank (descending score)"); plt.ylabel("enrichment score")
-        png = io.BytesIO(); plt.savefig(png, format="png", bbox_inches="tight", dpi=200)
-        png.seek(0); bufs.append(png.read()); names.append("Enrichment_curve.png")
+        # --- Minimal column detection (compat only; plotting below unchanged) ---
+        lower_map = {c.lower(): c for c in df_es.columns}
+        def pick(cands):
+            for n in cands:
+                if n in lower_map:
+                    return lower_map[n]
+            return None
+
+        # Accept R outputs like: rank, ES, hit (case-insensitive)
+        pos_col = pick(["rank", "position", "pos", "i", "rank_index", "index", "x"])
+        es_col  = pick(["es", "running_es", "running_score", "score", "y", "value"])
+        hit_col = pick(["hit", "hits", "marker", "tick"])  # optional; used for barcode ticks
+
+        if pos_col is None or es_col is None:
+            st.error("es_curve.csv must contain ranked positions (e.g., 'rank') and an ES column (e.g., 'ES').")
+        else:
+            fig = plt.figure()
+            xs = df_es[pos_col].values
+            es = df_es[es_col].values
+
+            es_max, es_min = float(np.max(es)), float(np.min(es)); es_range = es_max - es_min
+            where_mode = st.session_state.get("where_mode", "pre") if isinstance(st.session_state.get("where_mode", "pre"), str) else "pre"
+            plt.step(xs, es, where=where_mode, linewidth=cfg_line["main"], color=cfg_color["line"])
+            plt.axhline(0.0, color="black", linestyle="-", linewidth=1.0)
+            plt.axhline(es_max, color="red", linestyle="--", linewidth=cfg_line["cutoff"]) 
+            plt.axhline(es_min, color="red", linestyle="--", linewidth=cfg_line["cutoff"]) 
+
+            # barcode panel (unchanged): draw vertical ticks at hit positions
+            if hit_col is not None:
+                hits = df_es.loc[df_es[hit_col] == 1, pos_col].values
+            else:
+                hits = np.array([])
+            if (len(hits) > 0) and (es_range > 0):
+                tick_len = cfg_size["tick"] * es_range
+                nes_val = None; pt = (pathway_title or "").strip()
+                if (df_fgsea is not None) and (len(pt) > 0) and ("pathway" in df_fgsea.columns):
+                    row = df_fgsea[df_fgsea["pathway"].str.lower() == pt.lower()]
+                    if not row.empty and "nes" in row.columns:
+                        nes_val = float(row.iloc[0]["nes"])
+                if nes_val is None:
+                    nes_val = es_max if abs(es_max) >= abs(es_min) else es_min
+                y0, y1 = (0.0, -tick_len) if nes_val >= 0 else (0.0, tick_len)
+                for r in hits:
+                    plt.vlines(r, y0, y1, linewidth=0.5, color=cfg_color["tick"])        
+
+            plt.xlabel("rank (descending score)"); plt.ylabel("enrichment score")
+            png = io.BytesIO(); plt.savefig(png, format="png", bbox_inches="tight", dpi=200)
+            png.seek(0); bufs.append(png.read()); names.append("Enrichment_curve.png")
 
     if len(bufs) == 0:
         st.warning("No plots to export.")
