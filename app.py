@@ -10,8 +10,8 @@ import matplotlib.pyplot as plt
 # ==========================
 # App Meta
 # ==========================
-st.set_page_config(page_title="Node-2 RNA-seq • Quick Viz (v1.3.0)", layout="wide")
-st.title("Node-2 RNA-seq • Quick Viz (v1.3.0)")
+st.set_page_config(page_title="Node-2 RNA-seq • Quick Viz (v1.3.1)", layout="wide")
+st.title("Node-2 RNA-seq • Quick Viz (v1.3.1)")
 st.caption("Andrea × GC × Strategist v1 | R computation × Python visualization — Unified dashboard")
 
 # --- Session init ---
@@ -32,9 +32,12 @@ def normalize_columns(df: pd.DataFrame):
             .replace(" ", "_").replace("-", "_").replace("/", "_")
             .replace("(", "").replace(")", "")
         )
-        norm = "".join(ch for ch in norm if ch.isalnum() or ch == "_").lower()
-        mapping[c] = norm
-    return df.rename(columns=mapping)
+        norm = "".join(ch for ch in norm if c is not None for ch in norm if ch.isalnum() or ch == "_")
+    return df.rename(columns=lambda x: "".join(ch for ch in str(x).strip()
+                                               .replace("\u00A0"," ")
+                                               .replace(" ","_").replace("-","_").replace("/","_")
+                                               .replace("(","").replace(")","")
+                                              if ch.isalnum() or ch == "_").lower())
 
 def read_table(file, sep=None):
     if file is None:
@@ -164,7 +167,7 @@ df_es   = _load_df(up_es)
 # ==========================
 tab1, tab2, tab3, tab4 = st.tabs(["Volcano", "MA plot", "GSEA (table + ES)", "Lead Edge"])
 
-# Optional: show input snapshots (允許在未按 Run 前僅看頭部資料，避免眼花)
+# Optional: snapshots（未按 Run 前僅看 head()）
 if show_table_sample:
     with st.expander("Input snapshots", expanded=False):
         if df_deg is not None:  st.write("DEG table:", df_deg.head())
@@ -254,8 +257,11 @@ with tab3:
         else:
             try:
                 des = prepare_escurve(df_es)
-                pos_col = next((c for c in ["position","pos","i","rank_index"] if c in des.columns), None)
-                es_col  = next((c for c in ["running_es","running_score","es","score"] if c in des.columns), None)
+                # ---- expanded alias sets
+                pos_col = next((c for c in ["position","pos","i","rank_index","rank","rankindex","rank_position","index","x"]
+                                if c in des.columns), None)
+                es_col  = next((c for c in ["running_es","running_score","es","score","y","value"]
+                                if c in des.columns), None)
                 if pos_col is None or es_col is None:
                     raise ValueError("es_curve.csv must contain running ES over ranked positions")
                 fig, ax = plt.subplots()
@@ -265,6 +271,7 @@ with tab3:
                 ax.axhline(0.0, ls="--", lw=1)
                 ax.set_xlabel("Ranked position"); ax.set_ylabel("Running ES")
                 st.pyplot(fig, use_container_width=True)
+                st.caption(f"Detected columns → position: `{pos_col}`, ES: `{es_col}`")
             except Exception as e:
                 st.error(f"[ES curve] {e}")
 
@@ -306,4 +313,4 @@ with st.container():
 
 # Footer
 st.markdown("---")
-st.caption("Charts render only after pressing **Run Analysis**. Reset clears cache and uploaded anchors via reset_id-salted keys.")
+st.caption("Charts render only after pressing **Run Analysis**. Reset clears cache and uploaded anchors via reset_id-salted keys. ES now accepts 'rank' as position.")
